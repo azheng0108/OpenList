@@ -33,11 +33,11 @@ jobs:
         run: git tag -d beta
         continue-on-error: true
 
-      - name: changelog # or changelogithub@0.12 if ensure the stable result
+      - name: changelog 
         id: changelog
         run: |
           git tag -l
-          npx changelogithub --output CHANGELOG.md
+          echo "Auto-compiled beta version." > CHANGELOG.md
 
       - name: Upload assets to beta release
         env:
