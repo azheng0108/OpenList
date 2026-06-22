@@ -36,6 +36,14 @@ import (
 const (
 	KEY_HEX_1 = "73634235495062495331515373756c734e7253306c673d3d" // 第一层 AES 解密密钥
 	KEY_HEX_2 = "7150714477323633586746674c337538"                 // 第二层 AES 解密密钥
+
+	// =====================================================================
+	// 中国移动云盘 PC/Mac 桌面客户端 全局伪装常量配置
+	// 未来的 App 版本号若官方有升级，只需修改以下 3 行
+	// =====================================================================
+	PC_USER_AGENT    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Electron/28.2.4 中国移动云盘/12.27.0"
+	PC_MCLOUD_VER    = "12.27.0"
+	PC_DEVICE_INFO_F = "||13|12.27.0|PC|QkYtMjAyMDAzMTAxNjQ3|%s||macOS 13.6|1978X1127|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||"
 )
 
 // do others that not defined in Driver interface
@@ -140,19 +148,20 @@ func (d *Yun139) request(url string, method string, callback base.ReqCallback, r
 	if d.isFamily() {
 		svcType = "2"
 	}
+
+	fallbackDevInfo := fmt.Sprintf(PC_DEVICE_INFO_F, "ZGV2aWNlX2lkX2Rlc2t0b3A=")
 	req.SetHeaders(map[string]string{
 		"Accept":         "application/json, text/plain, */*",
 		"CMS-DEVICE":     "default",
 		"Authorization":  "Basic " + d.getAuthorization(),
 		"mcloud-channel": "1000101",
 		"mcloud-client":  "10701",
-		//"mcloud-route": "001",
-		"mcloud-sign": fmt.Sprintf("%s,%s,%s", ts, randStr, sign),
-		//"mcloud-skey":"",
-		"mcloud-version":         "7.14.0",
-		"Origin":                 "https://yun.139.com",
-		"Referer":                "https://yun.139.com/w/",
-		"x-DeviceInfo":           "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||",
+		"mcloud-sign":    fmt.Sprintf("%s,%s,%s", ts, randStr, sign),
+		"mcloud-version": PC_MCLOUD_VER,
+		"Origin":         "https://yun.139.com",
+		"Referer":        "https://yun.139.com/w/",
+		"User-Agent":     PC_USER_AGENT,
+		"x-DeviceInfo":   fallbackDevInfo,
 		"x-huawei-channelSrc":    "10000034",
 		"x-inner-ntwk":           "2",
 		"x-m4c-caller":           "PC",
@@ -171,12 +180,11 @@ func (d *Yun139) request(url string, method string, callback base.ReqCallback, r
 	}
 	log.Debugf("[139] response body: %s", res.String())
 	if !e.Success {
-		// Always try to unmarshal to the specific response type first if 'resp' is provided.
 		if resp != nil {
 			err = utils.Json.Unmarshal(res.Body(), resp)
 			if err != nil {
 				log.Debugf("[139] failed to unmarshal response to specific type: %v", err)
-				return nil, err // Return unmarshal error
+				return nil, err 
 			}
 			if createBatchOprTaskResp, ok := resp.(*CreateBatchOprTaskResp); ok {
 				log.Debugf("[139] CreateBatchOprTaskResp.Result.ResultCode: %s", createBatchOprTaskResp.Result.ResultCode)
@@ -185,7 +193,7 @@ func (d *Yun139) request(url string, method string, callback base.ReqCallback, r
 				}
 			}
 		}
-		return nil, errors.New(e.Message) // Fallback to original error if not handled
+		return nil, errors.New(e.Message) 
 	}
 	if resp != nil {
 		err = utils.Json.Unmarshal(res.Body(), resp)
@@ -217,19 +225,20 @@ func (d *Yun139) requestRoute(data interface{}, resp interface{}) ([]byte, error
 	if d.isFamily() {
 		svcType = "2"
 	}
+
+	fallbackDevInfo := fmt.Sprintf(PC_DEVICE_INFO_F, "ZGV2aWNlX2lkX2Rlc2t0b3A=")
 	req.SetHeaders(map[string]string{
 		"Accept":         "application/json, text/plain, */*",
 		"CMS-DEVICE":     "default",
 		"Authorization":  "Basic " + d.getAuthorization(),
 		"mcloud-channel": "1000101",
 		"mcloud-client":  "10701",
-		//"mcloud-route": "001",
-		"mcloud-sign": fmt.Sprintf("%s,%s,%s", ts, randStr, sign),
-		//"mcloud-skey":"",
-		"mcloud-version":         "7.14.0",
-		"Origin":                 "https://yun.139.com",
-		"Referer":                "https://yun.139.com/w/",
-		"x-DeviceInfo":           "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||",
+		"mcloud-sign":    fmt.Sprintf("%s,%s,%s", ts, randStr, sign),
+		"mcloud-version": PC_MCLOUD_VER,
+		"Origin":         "https://yun.139.com",
+		"Referer":        "https://yun.139.com/w/",
+		"User-Agent":     PC_USER_AGENT,
+		"x-DeviceInfo":   fallbackDevInfo,
 		"x-huawei-channelSrc":    "10000034",
 		"x-inner-ntwk":           "2",
 		"x-m4c-caller":           "PC",
@@ -304,7 +313,6 @@ func (d *Yun139) getFiles(catalogID string) ([]model.Obj, error) {
 					HashInfo: utils.NewHashInfo(utils.MD5, content.Digest),
 				},
 				Thumbnail: model.Thumbnail{Thumbnail: content.ThumbnailURL},
-				// Thumbnail: content.BigthumbnailURL,
 			}
 			files = append(files, &f)
 		}
@@ -359,7 +367,7 @@ func (d *Yun139) familyGetFiles(catalogID string) ([]model.Obj, error) {
 				IsFolder: true,
 				Modified: getTime(catalog.LastUpdateTime),
 				Ctime:    getTime(catalog.CreateTime),
-				Path:     path, // 文件夹上一级的Path
+				Path:     path, 
 			}
 			files = append(files, &f)
 		}
@@ -371,10 +379,9 @@ func (d *Yun139) familyGetFiles(catalogID string) ([]model.Obj, error) {
 					Size:     content.ContentSize,
 					Modified: getTime(content.LastUpdateTime),
 					Ctime:    getTime(content.CreateTime),
-					Path:     path, // 文件所在目录的Path
+					Path:     path, 
 				},
 				Thumbnail: model.Thumbnail{Thumbnail: content.ThumbnailURL},
-				// Thumbnail: content.BigthumbnailURL,
 			}
 			files = append(files, &f)
 		}
@@ -417,7 +424,7 @@ func (d *Yun139) groupGetFiles(catalogID string) ([]model.Obj, error) {
 				IsFolder: true,
 				Modified: getTime(catalog.UpdateTime),
 				Ctime:    getTime(catalog.CreateTime),
-				Path:     catalog.Path, // 文件夹的真实Path， root:/开头
+				Path:     catalog.Path, 
 			}
 			files = append(files, &f)
 		}
@@ -429,10 +436,9 @@ func (d *Yun139) groupGetFiles(catalogID string) ([]model.Obj, error) {
 					Size:     content.ContentSize,
 					Modified: getTime(content.UpdateTime),
 					Ctime:    getTime(content.CreateTime),
-					Path:     path, // 文件所在目录的Path
+					Path:     path, 
 				},
 				Thumbnail: model.Thumbnail{Thumbnail: content.ThumbnailURL},
-				// Thumbnail: content.BigthumbnailURL,
 			}
 			files = append(files, &f)
 		}
@@ -511,17 +517,27 @@ func (d *Yun139) personalRequest(pathname string, method string, callback base.R
 	if d.isFamily() {
 		svcType = "2"
 	}
+
+	// 动态指纹隔离：取当前账号MD5作为稳定设备ID，防止多开封号
+	acc := d.getAccount()
+	if acc == "" {
+		acc = "default_pc_account_id"
+	}
+	devID := utils.GetMD5EncodeStr(acc)
+	pcClientInfo := fmt.Sprintf(PC_DEVICE_INFO_F, devID)
+
 	req.SetHeaders(map[string]string{
 		"Accept":               "application/json, text/plain, */*",
 		"Authorization":        "Basic " + d.getAuthorization(),
-		"Caller":               "web",
+		"Caller":               "PC",
 		"Cms-Device":           "default",
 		"Mcloud-Channel":       "1000101",
 		"Mcloud-Client":        "10701",
 		"Mcloud-Route":         "001",
 		"Mcloud-Sign":          fmt.Sprintf("%s,%s,%s", ts, randStr, sign),
-		"Mcloud-Version":       "7.14.0",
-		"x-DeviceInfo":         "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||",
+		"Mcloud-Version":       PC_MCLOUD_VER,
+		"User-Agent":           PC_USER_AGENT,
+		"x-DeviceInfo":         pcClientInfo,
 		"x-huawei-channelSrc":  "10000034",
 		"x-inner-ntwk":         "2",
 		"x-m4c-caller":         "PC",
@@ -530,7 +546,7 @@ func (d *Yun139) personalRequest(pathname string, method string, callback base.R
 		"X-Yun-Api-Version":    "v1",
 		"X-Yun-App-Channel":    "10000034",
 		"X-Yun-Channel-Source": "10000034",
-		"X-Yun-Client-Info":    "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||dW5kZWZpbmVk||",
+		"X-Yun-Client-Info":    pcClientInfo,
 		"X-Yun-Module-Type":    "100",
 		"X-Yun-Svc-Type":       "1",
 	})
@@ -685,7 +701,6 @@ func (d *Yun139) getPersonalCloudHost() string {
 }
 
 func (d *Yun139) uploadPersonalParts(ctx context.Context, partInfos []PartInfo, uploadPartInfos []PersonalPartInfo, rateLimited *driver.RateLimitReader, p *driver.Progress) error {
-	// 确保数组以 PartNumber 从小到大排序
 	sort.Slice(uploadPartInfos, func(i, j int) bool {
 		return uploadPartInfos[i].PartNumber < uploadPartInfos[j].PartNumber
 	})
@@ -707,6 +722,7 @@ func (d *Yun139) uploadPersonalParts(ctx context.Context, partInfos []PartInfo, 
 		req.Header.Set("Content-Length", fmt.Sprint(partSize))
 		req.Header.Set("Origin", "https://yun.139.com")
 		req.Header.Set("Referer", "https://yun.139.com/")
+		req.Header.Set("User-Agent", PC_USER_AGENT) // 补齐分片二进制流推流伪装
 		req.ContentLength = partSize
 		err = func() error {
 			res, err := base.HttpClient.Do(req)
@@ -767,13 +783,12 @@ func (d *Yun139) step1_password_login() (string, error) {
 	log.Debugf("--- 执行步骤 1: 登录 API ---")
 	loginURL := "https://mail.10086.cn/Login/Login.ashx"
 
-	// 密码 SHA1 哈希
 	hashedPassword := sha1Hash(fmt.Sprintf("fetion.com.cn:%s", d.Password))
 	log.Debugf("DEBUG: 原始密码: %s", d.Password)
 	log.Debugf("DEBUG: SHA1 输入: fetion.com.cn:%s", d.Password)
 	log.Debugf("DEBUG: 生成的 Password 哈希: %s", hashedPassword)
 
-	cguid := strconv.FormatInt(time.Now().UnixMilli(), 10) // 随机生成 cguid
+	cguid := strconv.FormatInt(time.Now().UnixMilli(), 10) 
 
 	loginHeaders := map[string]string{
 		"accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -810,7 +825,6 @@ func (d *Yun139) step1_password_login() (string, error) {
 	log.Debugf("DEBUG: 登录请求 Headers: %+v", loginHeaders)
 	log.Debugf("DEBUG: 登录请求 Body: %s", loginData.Encode())
 
-	// 设置客户端不跟随重定向
 	client := base.RestyClient.SetRedirectPolicy(resty.NoRedirectPolicy())
 	res, err := client.R().
 		SetHeaders(loginHeaders).
@@ -818,7 +832,6 @@ func (d *Yun139) step1_password_login() (string, error) {
 		Post(loginURL)
 
 	if err != nil {
-		// 如果是重定向错误，则不作为失败处理，因为我们禁止了自动重定向
 		if res != nil && res.StatusCode() >= 300 && res.StatusCode() < 400 {
 			log.Debugf("DEBUG: 登录响应 Status Code: %d (Redirect)", res.StatusCode())
 		} else {
@@ -827,13 +840,11 @@ func (d *Yun139) step1_password_login() (string, error) {
 	} else {
 		log.Debugf("DEBUG: 登录响应 Status Code: %d", res.StatusCode())
 	}
-	// 恢复客户端的默认重定向策略，以免影响后续请求
 	base.RestyClient.SetRedirectPolicy(resty.FlexibleRedirectPolicy(10))
 	log.Debugf("DEBUG: 登录响应 Headers: %+v", res.Header())
 
 	var sid, extractedCguid string
 
-	// 从 Location 头部提取 sid 和 cguid
 	locationHeader := res.Header().Get("Location")
 	if locationHeader != "" {
 		sidMatch := regexp.MustCompile(`sid=([^&]+)`).FindStringSubmatch(locationHeader)
@@ -848,7 +859,6 @@ func (d *Yun139) step1_password_login() (string, error) {
 		}
 	}
 
-	// 如果 Location 中没有，尝试从 Set-Cookie 中提取
 	if sid == "" || extractedCguid == "" {
 		setCookieHeaders := res.Header().Values("Set-Cookie")
 		for _, cookieStr := range setCookieHeaders {
@@ -869,7 +879,6 @@ func (d *Yun139) step1_password_login() (string, error) {
 		return "", errors.New("failed to extract sid or cguid from login response")
 	}
 
-	// 提取并记录 cookies
 	loginUrlObj, _ := url.Parse(loginURL)
 	cookies := base.RestyClient.GetClient().Jar.Cookies(loginUrlObj)
 	var cookieStrings []string
@@ -889,7 +898,6 @@ func (d *Yun139) step2_get_single_token(sid string) (string, error) {
 
 	exchangeArtifactURL := fmt.Sprintf("https://smsrebuild1.mail.10086.cn/setting/s?func=%s&sid=%s&cguid=%s", url.QueryEscape("umc:getArtifact"), sid, cguid)
 
-	// 从 MailCookies 中提取 RMKEY
 	var rmkey string
 	cookies := strings.Split(d.MailCookies, ";")
 	for _, cookie := range cookies {
@@ -935,23 +943,18 @@ func (d *Yun139) step2_get_single_token(sid string) (string, error) {
 	return dycpwd, nil
 }
 
-// --- 辅助函数：加密/解密 ---
-
-// sha1Hash 计算 SHA1 哈希值，返回十六进制字符串。
 func sha1Hash(data string) string {
 	h := sha1.New()
 	h.Write([]byte(data))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// pkcs7_pad PKCS7 填充
 func pkcs7_pad(data []byte, blockSize int) []byte {
 	padding := blockSize - len(data)%blockSize
 	padtext := bytes.Repeat([]byte{byte(padding)}, padding)
 	return append(data, padtext...)
 }
 
-// pkcs7_unpad PKCS7 去填充
 func pkcs7_unpad(data []byte) ([]byte, error) {
 	length := len(data)
 	if length == 0 {
@@ -964,7 +967,6 @@ func pkcs7_unpad(data []byte) ([]byte, error) {
 	return data[:(length - unpadding)], nil
 }
 
-// aes_ecb_decrypt AES/ECB/Pkcs7 解密，输入为十六进制字符串。
 func aes_ecb_decrypt(ciphertext []byte, key []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -985,7 +987,6 @@ func aes_ecb_decrypt(ciphertext []byte, key []byte) ([]byte, error) {
 	return pkcs7_unpad(decrypted)
 }
 
-// 以下提供 camelCase 的 AES CBC 加解密，供文件中其它位置调用（并支持传入 IV）。
 func aesCbcEncrypt(plaintext []byte, key []byte, iv []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -1018,7 +1019,6 @@ func aesCbcDecrypt(ciphertext []byte, key []byte, iv []byte) ([]byte, error) {
 	return pkcs7_unpad(decrypted)
 }
 
-// sortedJsonStringify 对 JSON 对象进行排序并字符串化。
 func sortedJsonStringify(obj interface{}) (string, error) {
 	if obj == nil {
 		return "null", nil
@@ -1026,12 +1026,10 @@ func sortedJsonStringify(obj interface{}) (string, error) {
 
 	switch v := obj.(type) {
 	case string:
-		// 尝试解析为 JSON，如果成功则递归处理
 		var parsed interface{}
 		if err := jsoniter.Unmarshal([]byte(v), &parsed); err == nil {
 			return sortedJsonStringify(parsed)
 		}
-		// 如果不是 JSON 字符串，则直接返回 JSON 字符串化的结果
 		return jsoniter.MarshalToString(v)
 	case int, float64, bool:
 		return fmt.Sprintf("%v", v), nil
@@ -1059,7 +1057,6 @@ func sortedJsonStringify(obj interface{}) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			// Use jsoniter.MarshalToString for the key to ensure it's quoted correctly
 			keyStr, err := jsoniter.MarshalToString(key)
 			if err != nil {
 				return "", err
@@ -1068,29 +1065,23 @@ func sortedJsonStringify(obj interface{}) (string, error) {
 		}
 		return fmt.Sprintf("{%s}", strings.Join(pairs, ",")), nil
 	default:
-		// Fallback for other types, e.g., numbers, booleans, or unhandled complex types
-		// Use jsoniter's default marshalling for these
 		return jsoniter.MarshalToString(v)
 	}
 }
 
-// yun139EncryptedRequest handles the common encrypted request/response flow.
 func (d *Yun139) yun139EncryptedRequest(url string, body interface{}, headers map[string]string, aesKeyHex string, resp interface{}) ([]byte, error) {
-	// 1. Decode AES key
 	aesKey, err := hex.DecodeString(aesKeyHex)
 	if err != nil {
 		return nil, fmt.Errorf("yun139EncryptedRequest: failed to decode AES key: %w", err)
 	}
 
-	// 2. Marshal and sort the request body
 	sortedJson, err := sortedJsonStringify(body)
 	if err != nil {
 		return nil, fmt.Errorf("yun139EncryptedRequest: failed to marshal and sort body: %w", err)
 	}
 	log.Debugf("yun139EncryptedRequest: Request Body (plaintext): %s", sortedJson)
 
-	// 3. Encrypt the body using AES/CBC
-	iv := make([]byte, 16) // 16 bytes for AES-128
+	iv := make([]byte, 16) 
 	if _, err := crypto_rand.Read(iv); err != nil {
 		return nil, fmt.Errorf("yun139EncryptedRequest: failed to generate IV: %w", err)
 	}
@@ -1100,7 +1091,6 @@ func (d *Yun139) yun139EncryptedRequest(url string, body interface{}, headers ma
 	}
 	payload := base64.StdEncoding.EncodeToString(append(iv, encryptedBody...))
 
-	// 4. Make the request
 	res, err := base.RestyClient.R().
 		SetHeaders(headers).
 		SetBody(payload).
@@ -1114,7 +1104,6 @@ func (d *Yun139) yun139EncryptedRequest(url string, body interface{}, headers ma
 		return nil, fmt.Errorf("yun139EncryptedRequest: unexpected status code %d: %s", res.StatusCode(), res.String())
 	}
 
-	// 5. Decrypt the response
 	respBody := res.Body()
 	var decryptedBytes []byte
 
@@ -1142,7 +1131,6 @@ func (d *Yun139) yun139EncryptedRequest(url string, body interface{}, headers ma
 
 	log.Debugf("yun139EncryptedRequest: Response Body (decrypted): %s", string(decryptedBytes))
 
-	// 6. Unmarshal to the final response struct
 	if resp != nil {
 		err = utils.Json.Unmarshal(decryptedBytes, resp)
 		if err != nil {
@@ -1157,7 +1145,7 @@ func (d *Yun139) step3_third_party_login(dycpwd string) (string, error) {
 	log.Debugf("\n--- 执行步骤 3: 单点登录 API ---")
 	ssoLoginURL := "https://user-njs.yun.139.com/user/thirdlogin"
 
-	// 构建原始请求体
+	// 保持安卓 App 握手口令不变，换取的 authToken 是后端全端通用的
 	ssoRequestBodyRaw := base.Json{
 		"clientkey_decrypt": "l3TryM&Q+X7@dzwk)qP",
 		"clienttype":        "886",
@@ -1184,7 +1172,6 @@ func (d *Yun139) step3_third_party_login(dycpwd string) (string, error) {
 		"User-Agent":          "okhttp/3.12.2",
 	}
 
-	// 使用通用加密请求函数
 	decryptedLayer1StrBytes, err := d.yun139EncryptedRequest(ssoLoginURL, ssoRequestBodyRaw, ssoLoginHeaders, KEY_HEX_1, nil)
 	if err != nil {
 		return "", fmt.Errorf("step3 encrypted request failed: %w", err)
@@ -1194,9 +1181,7 @@ func (d *Yun139) step3_third_party_login(dycpwd string) (string, error) {
 	if hexInner == "" {
 		return "", errors.New("missing data field in first layer decryption result")
 	}
-	log.Debugf("DEBUG: 第一层解密提取到 hex_inner: %s...", hexInner[:min(len(hexInner), 50)])
 
-	// 第二层解密
 	key2, err := hex.DecodeString(KEY_HEX_2)
 	if err != nil {
 		return "", fmt.Errorf("failed to decode KEY_HEX_2: %w", err)
@@ -1209,16 +1194,12 @@ func (d *Yun139) step3_third_party_login(dycpwd string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("step3 response layer2 aes ecb decrypt failed: %w", err)
 	}
-	log.Debugf("DEBUG: 最终解密结果: %s", string(finalJsonStrBytes))
 
-	// 提取 authToken
 	authToken := jsoniter.Get(finalJsonStrBytes, "authToken").ToString()
 	if authToken == "" {
 		return "", errors.New("failed to extract authToken from final decryption result")
 	}
-	log.Debugf("DEBUG: 提取到 authToken: %s", authToken)
 
-	// 提取 account 和 userDomainId
 	account := jsoniter.Get(finalJsonStrBytes, "account").ToString()
 	userDomainId := jsoniter.Get(finalJsonStrBytes, "userDomainId").ToString()
 
@@ -1254,7 +1235,7 @@ func (d *Yun139) loginWithPassword() (string, error) {
 	}
 	log.Infof("Step 3 success, new authorization generated.")
 
-	d.Authorization = newAuth // Ensure Authorization is also updated before saving
+	d.Authorization = newAuth 
 	op.MustSaveDriverStorage(d)
 	return newAuth, nil
 }
@@ -1271,7 +1252,7 @@ func (d *Yun139) andAlbumRequest(pathname string, body interface{}, resp interfa
 		"x-huawei-channelsrc": "10246600",
 		"x-sdk-channelsrc":    "",
 		"x-mm-source":         "0",
-		"x-deviceinfo":        "1|127.0.0.1|1|12.3.2|Xiaomi|23116PN5BC||02-00-00-00-00-00|android 15|1440x3200|android|zh||||032|0|", //重要参数
+		"x-deviceinfo":        "1|127.0.0.1|1|12.3.2|Xiaomi|23116PN5BC||02-00-00-00-00-00|android 15|1440x3200|android|zh||||032|0|", 
 		"content-type":        "application/json; charset=utf-8",
 		"user-agent":          "okhttp/4.11.0",
 		"accept-encoding":     "gzip",
@@ -1291,7 +1272,6 @@ func (d *Yun139) handleMetaGroupCopy(ctx context.Context, srcObj, dstDir model.O
 	}
 
 	destCatalogID := path.Join("root:/", dstDir.GetPath(), dstDir.GetID())
-	log.Debugf("[139Yun Group Copy] srcObj ID: %s, srcObj Path: %s, dstDir ID: %s, dstDir Path: %s, destCatalogID: %s", srcObj.GetID(), srcObj.GetPath(), dstDir.GetID(), dstDir.GetPath(), destCatalogID)
 
 	body := base.Json{
 		"commonAccountInfo": base.Json{
@@ -1310,7 +1290,6 @@ func (d *Yun139) handleMetaGroupCopy(ctx context.Context, srcObj, dstDir model.O
 	return err
 }
 
-// getGroupRootByCloudID 查询 group 上层信息，优先返回 parentCatalogID，回退到 catalogList[0].path
 func (d *Yun139) getGroupRootByCloudID(cloudID string) (string, error) {
 	pathname := "/orchestration/group-rebuild/catalog/v1.0/queryGroupContentList"
 	body := base.Json{
@@ -1348,10 +1327,7 @@ func (d *Yun139) getGroupRootByCloudID(cloudID string) (string, error) {
 	return "", fmt.Errorf("no root found in group response")
 }
 
-// getFamilyRootPath 查询 family 的上层 path（data.path）
-// 返回值已去除前缀 "root:/"（或 "root:"），直接返回纯 ID 或 path 部分，便于持久化为 RootFolderID。
 func (d *Yun139) getFamilyRootPath(cloudID string) (string, error) {
-	// 使用 v1.2 接口（代码日志中已有该请求），pageSize 取 1 足够获取 path 字段
 	pathname := "/orchestration/familyCloud-rebuild/content/v1.2/queryContentList"
 	body := base.Json{
 		"catalogID":   "",
@@ -1378,7 +1354,6 @@ func (d *Yun139) getFamilyRootPath(cloudID string) (string, error) {
 	if dataObj == nil {
 		return "", fmt.Errorf("invalid family response data")
 	}
-	// helper to strip "root:/" or "root:" prefix
 	stripRoot := func(s string) string {
 		s = strings.TrimSpace(s)
 		s = strings.TrimPrefix(s, "root:/")
@@ -1388,7 +1363,6 @@ func (d *Yun139) getFamilyRootPath(cloudID string) (string, error) {
 	if p, ok := dataObj["path"].(string); ok && p != "" {
 		return stripRoot(p), nil
 	}
-	// 回退：有时 path 在 cloudCatalogList.catalogList 中
 	if cl, ok := dataObj["cloudCatalogList"].([]interface{}); ok && len(cl) > 0 {
 		if first, ok := cl[0].(map[string]interface{}); ok {
 			if p, ok := first["path"].(string); ok && p != "" {
