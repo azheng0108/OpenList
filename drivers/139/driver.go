@@ -663,7 +663,8 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 			"contentHash":          fullHash,
 			"contentHashAlgorithm": "SHA256",
 			"contentType":          "application/octet-stream",
-			"parallelUpload":       false,
+			"parallelUpload":       true,           // [核心修改] 开启并发秒传预检
+			"storyVideoFile":       false,          // [核心补充] 匹配放行要求
 			"partInfos":            firstPartInfos,
 			"size":                 size,
 			"parentFileId":         dstDir.GetID(),
