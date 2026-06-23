@@ -734,9 +734,8 @@ func (d *Yun139) getPersonalCloudHost() string {
 	return d.PersonalCloudHost
 }
 
-// ✅ 核心修复：退回到单线程，确保上传能够正常工作，且进度条绝对真实不造假
+// 核心修复点：退回到单线程，保证上传稳定，解决报错及虚高进度条
 func (d *Yun139) uploadPersonalParts(ctx context.Context, partInfos []PartInfo, uploadPartInfos []PersonalPartInfo, rateLimited *driver.RateLimitReader, p *driver.Progress) error {
-	// 确保数组以 PartNumber 从小到大排序
 	sort.Slice(uploadPartInfos, func(i, j int) bool {
 		return uploadPartInfos[i].PartNumber < uploadPartInfos[j].PartNumber
 	})
@@ -748,9 +747,9 @@ func (d *Yun139) uploadPersonalParts(ctx context.Context, partInfos []PartInfo, 
 		}
 		
 		partSize := partInfos[index].PartSize
-		log.Debugf("[139] uploading part %+v/%+v", index, len(partInfos))
+		log.Debugf("[139] sequentially uploading part %d/%d", uploadPartInfo.PartNumber, len(partInfos))
 		
-		// 绑定限速器和真实进度条
+		// 绑定进度条，读取的数据量与网卡真实发送量一致
 		limitReader := io.LimitReader(rateLimited, partSize)
 		r := io.TeeReader(limitReader, p)
 		
@@ -759,25 +758,24 @@ func (d *Yun139) uploadPersonalParts(ctx context.Context, partInfos []PartInfo, 
 			return err
 		}
 		
-		// 严格对齐你之前的抓包请求头
 		req.Header.Set("Content-Type", "application/octet-stream")
-		req.Header.Set("Content-Length", fmt.Sprint(partSize))
 		req.Header.Set("Origin", "https://yun.139.com")
 		req.Header.Set("Referer", "https://yun.139.com/")
 		
-		// 必须显式声明 ContentLength，否则使用 TeeReader 会触发 Chunked 模式导致上传失败
+		// 强制设置长度避免自动 Chunked
 		req.ContentLength = partSize
 		
-		// 同步执行网络请求，阻塞直到当前切片发送完成
 		err = func() error {
 			res, err := base.HttpClient.Do(req)
 			if err != nil {
 				return err
 			}
 			defer res.Body.Close()
-			log.Debugf("[139] uploaded: %+v", res)
+			
+			// 读取完整的 Body 以保证连接复用和防掉线
+			body, _ := io.ReadAll(res.Body)
+			
 			if res.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(res.Body)
 				return fmt.Errorf("unexpected status code: %d, body: %s", res.StatusCode, string(body))
 			}
 			return nil
@@ -786,6 +784,9 @@ func (d *Yun139) uploadPersonalParts(ctx context.Context, partInfos []PartInfo, 
 		if err != nil {
 			return err
 		}
+		
+		// 给上游服务端一点时间同步分片
+		time.Sleep(500 * time.Millisecond)
 	}
 	return nil
 }
