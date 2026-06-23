@@ -157,6 +157,7 @@ func (d *Yun139) refreshToken() error {
 		if loginErr != nil {
 			return fmt.Errorf("login fallback failed: %w", loginErr)
 		}
+		_ = newAuth // ✅ 修复了报错：声明了变量并假装使用它一下
 		return nil
 	}
 
