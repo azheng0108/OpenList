@@ -22,8 +22,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
@@ -157,7 +155,7 @@ func (d *Yun139) refreshToken() error {
 		if loginErr != nil {
 			return fmt.Errorf("login fallback failed: %w", loginErr)
 		}
-		_ = newAuth // ✅ 修复了报错：声明了变量并假装使用它一下
+		_ = newAuth // ✅ 解决变量声明未使用的错误
 		return nil
 	}
 
@@ -736,71 +734,59 @@ func (d *Yun139) getPersonalCloudHost() string {
 	return d.PersonalCloudHost
 }
 
+// ✅ 核心修复：退回到单线程，确保上传能够正常工作，且进度条绝对真实不造假
 func (d *Yun139) uploadPersonalParts(ctx context.Context, partInfos []PartInfo, uploadPartInfos []PersonalPartInfo, rateLimited *driver.RateLimitReader, p *driver.Progress) error {
+	// 确保数组以 PartNumber 从小到大排序
 	sort.Slice(uploadPartInfos, func(i, j int) bool {
 		return uploadPartInfos[i].PartNumber < uploadPartInfos[j].PartNumber
 	})
 
-	const MaxConcurrency = 4
-	sem := make(chan struct{}, MaxConcurrency)
-	var eg errgroup.Group
-
 	for _, uploadPartInfo := range uploadPartInfos {
-		upi := uploadPartInfo
-		index := upi.PartNumber - 1
-
+		index := uploadPartInfo.PartNumber - 1
 		if index < 0 || index >= len(partInfos) {
-			return fmt.Errorf("invalid PartNumber %d: index out of bounds", upi.PartNumber)
+			return fmt.Errorf("invalid PartNumber %d: index out of bounds (partInfos length: %d)", uploadPartInfo.PartNumber, len(partInfos))
 		}
+		
 		partSize := partInfos[index].PartSize
-
-		chunkData := make([]byte, partSize)
+		log.Debugf("[139] uploading part %+v/%+v", index, len(partInfos))
+		
+		// 绑定限速器和真实进度条
 		limitReader := io.LimitReader(rateLimited, partSize)
 		r := io.TeeReader(limitReader, p)
-
-		n, err := io.ReadFull(r, chunkData)
-		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			return fmt.Errorf("failed to read chunk %d: %w", index, err)
+		
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadPartInfo.UploadUrl, r)
+		if err != nil {
+			return err
 		}
-		chunkData = chunkData[:n]
-
-		sem <- struct{}{}
-
-		eg.Go(func() error {
-			defer func() { <-sem }()
-
-			log.Debugf("[139] concurrently uploading part %d (size: %d)", index, len(chunkData))
-
-			req, err := http.NewRequestWithContext(ctx, http.MethodPut, upi.UploadUrl, bytes.NewReader(chunkData))
-			if err != nil {
-				return err
-			}
-			req.Header.Set("Content-Type", "application/octet-stream")
-			req.Header.Set("Content-Length", fmt.Sprint(len(chunkData)))
-			req.Header.Set("Origin", "file://") // 对齐核心通信伪装
-			req.Header.Set("Referer", "file:///D:/SOFTWARE/mCloud/resources/app.asar/out/renderer//index.html")
-			req.Header.Set("User-Agent", PC_USER_AGENT)
-			req.ContentLength = int64(len(chunkData))
-
+		
+		// 严格对齐你之前的抓包请求头
+		req.Header.Set("Content-Type", "application/octet-stream")
+		req.Header.Set("Content-Length", fmt.Sprint(partSize))
+		req.Header.Set("Origin", "https://yun.139.com")
+		req.Header.Set("Referer", "https://yun.139.com/")
+		
+		// 必须显式声明 ContentLength，否则使用 TeeReader 会触发 Chunked 模式导致上传失败
+		req.ContentLength = partSize
+		
+		// 同步执行网络请求，阻塞直到当前切片发送完成
+		err = func() error {
 			res, err := base.HttpClient.Do(req)
 			if err != nil {
 				return err
 			}
 			defer res.Body.Close()
-			
-			log.Debugf("[139] uploaded part %d: status %d", index, res.StatusCode)
+			log.Debugf("[139] uploaded: %+v", res)
 			if res.StatusCode != http.StatusOK {
 				body, _ := io.ReadAll(res.Body)
-				return fmt.Errorf("unexpected status code on part %d: %d, body: %s", index, res.StatusCode, string(body))
+				return fmt.Errorf("unexpected status code: %d, body: %s", res.StatusCode, string(body))
 			}
 			return nil
-		})
+		}()
+		
+		if err != nil {
+			return err
+		}
 	}
-
-	if err := eg.Wait(); err != nil {
-		return fmt.Errorf("multipart upload failed: %w", err)
-	}
-
 	return nil
 }
 
