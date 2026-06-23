@@ -38,11 +38,12 @@ import (
 const (
 	KEY_HEX_1 = "73634235495062495331515373756c734e7253306c673d3d" // 第一层 AES 解密密钥
 	KEY_HEX_2 = "7150714477323633586746674c337538"                 // 第二层 AES 解密密钥
-	
-	// PC端硬编码伪装特征
-	MAC_DEVICE_ID = "A1B2C3D4E5F678901234567890ABCDEF-ENDIN"
-	MAC_HOSTNAME  = "DESKTOP-X89J21K"
-	PC_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) mCloud/8.7.0.20260213 Chrome/108.0.5359.215 Electron/22.3.0 Safari/537.36"
+
+	// 100% 对齐你最新抓包 (8.8.1版) 的 Windows PC 端硬编码伪装特征
+	MAC_DEVICE_ID = "3910A5ECE4CB912D27C7A96084000C98"
+	MAC_HOSTNAME  = "WjA1MDkxMzM5MzA4ODc4"
+	PC_VERSION    = "8.8.1.20260617"
+	PC_USER_AGENT = "Mozilla/5.0"
 )
 
 // do others that not defined in Driver interface
@@ -108,17 +109,17 @@ func (d *Yun139) refreshToken() error {
 		return fmt.Errorf("authorization has expired")
 	}
 
-	// 核心修改：使用你抓包得到的最新 PC 端 JSON 接口与特征
+	// 核心修改：使用最新的 PC 端 JSON 接口与特征
 	url := "https://user-njs.yun.139.com/user/auth/refreshToken"
-	
-	// 完美复刻 38 字节的请求体，d.UserDomainID 是在 step3 登录时就已经获取并保存好的
+
+	// 完美复刻 38 字节的请求体
 	reqBody := fmt.Sprintf(`{"userDomainId":"%s"}`, d.UserDomainID)
 
 	// 全套纯正的 Windows PC 客户端马甲
 	headers := map[string]string{
 		"accept":              "*/*",
 		"app_cp":              "pc",
-		"cp_version":          PC_VERSION, // 调用顶部的常量 8.8.1.20260617
+		"cp_version":          PC_VERSION,
 		"content-type":        "application/json;charset=UTF-8",
 		"user-agent":          PC_USER_AGENT,
 		"x-deviceinfo":        fmt.Sprintf("||11|%s|PC|%s|%s-ENDIN|| Windows 10 (10.0.19044.4529)|2560X1530|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||", PC_VERSION, MAC_HOSTNAME, MAC_DEVICE_ID),
@@ -130,7 +131,7 @@ func (d *Yun139) refreshToken() error {
 		"x-yun-module-type":   "100",
 		"x-yun-op-type":       "1",
 		"x-yun-svc-type":      "1",
-		"x-yun-uni":           d.UserDomainID, // 补充你抓包发现的额外身份头
+		"x-yun-uni":           d.UserDomainID,
 	}
 
 	var resp base.Json
@@ -140,7 +141,6 @@ func (d *Yun139) refreshToken() error {
 		SetResult(&resp).
 		Post(url)
 
-	// 如果网络请求失败，回退到密码重新登录
 	if err != nil {
 		log.Warnf("139yun: failed to refresh token with API: %v. trying to login with password.", err)
 		newAuth, loginErr := d.loginWithPassword()
@@ -151,7 +151,6 @@ func (d *Yun139) refreshToken() error {
 		return nil
 	}
 
-	// 检查新版接口的 JSON 返回状态 ("success": true)
 	if success, ok := resp["success"].(bool); !ok || !success {
 		log.Warnf("139yun: token refresh response not success: %s", res.String())
 		newAuth, loginErr := d.loginWithPassword()
@@ -161,7 +160,6 @@ func (d *Yun139) refreshToken() error {
 		return nil
 	}
 
-	// 提取并更新全新的 AuthToken
 	dataMap, ok := resp["data"].(map[string]interface{})
 	if !ok {
 		return fmt.Errorf("invalid response data format")
@@ -171,7 +169,6 @@ func (d *Yun139) refreshToken() error {
 		return fmt.Errorf("token string not found in response")
 	}
 
-	// 拼装并保存新的 Authorization 凭证
 	d.Authorization = base64.StdEncoding.EncodeToString([]byte(splits[0] + ":" + splits[1] + ":" + newToken))
 	op.MustSaveDriverStorage(d)
 	log.Infof("139yun: successfully refreshed PC token.")
@@ -195,22 +192,22 @@ func (d *Yun139) request(url string, method string, callback base.ReqCallback, r
 		svcType = "2"
 	}
 	req.SetHeaders(map[string]string{
-		"Accept":                 "application/json, text/plain, */*",
+		"Accept":                 "*/*",
 		"CMS-DEVICE":             "default",
 		"Authorization":          "Basic " + d.getAuthorization(),
 		"mcloud-channel":         "10200153",
 		"mcloud-client":          "10002",
 		"mcloud-sign":            fmt.Sprintf("%s,%s,%s", ts, randStr, sign),
-		"mcloud-version":         "8.7.0",
+		"mcloud-version":         PC_VERSION,
 		"Origin":                 "file://",
 		"Referer":                "file:///D:/SOFTWARE/mCloud/resources/app.asar/out/renderer//index.html",
 		"User-Agent":             PC_USER_AGENT,
-		"x-DeviceInfo":           fmt.Sprintf("||11|8.7.0.20260213|PC|%s|%s|| Windows 11 (10.0.22631)|2560X1440|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||", MAC_HOSTNAME, MAC_DEVICE_ID),
+		"x-DeviceInfo":           fmt.Sprintf("||11|%s|PC|%s|%s|| Windows 10 (10.0.19044.4529)|2560X1530|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||", PC_VERSION, MAC_HOSTNAME, MAC_DEVICE_ID),
 		"x-huawei-channelSrc":    "10200153",
 		"x-inner-ntwk":           "2",
 		"x-m4c-caller":           "pc",
 		"x-m4c-src":              "10002",
-		"x-yun-device-id":        MAC_DEVICE_ID,
+		"x-yun-device-id":        fmt.Sprintf("%s-ENDIN", MAC_DEVICE_ID),
 		"x-SvcType":              svcType,
 		"Inner-Hcy-Router-Https": "1",
 	})
@@ -270,22 +267,22 @@ func (d *Yun139) requestRoute(data interface{}, resp interface{}) ([]byte, error
 		svcType = "2"
 	}
 	req.SetHeaders(map[string]string{
-		"Accept":                 "application/json, text/plain, */*",
+		"Accept":                 "*/*",
 		"CMS-DEVICE":             "default",
 		"Authorization":          "Basic " + d.getAuthorization(),
 		"mcloud-channel":         "10200153",
 		"mcloud-client":          "10002",
 		"mcloud-sign":            fmt.Sprintf("%s,%s,%s", ts, randStr, sign),
-		"mcloud-version":         "8.7.0",
+		"mcloud-version":         PC_VERSION,
 		"Origin":                 "file://",
 		"Referer":                "file:///D:/SOFTWARE/mCloud/resources/app.asar/out/renderer//index.html",
 		"User-Agent":             PC_USER_AGENT,
-		"x-DeviceInfo":           fmt.Sprintf("||11|8.7.0.20260213|PC|%s|%s|| Windows 11 (10.0.22631)|2560X1440|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||", MAC_HOSTNAME, MAC_DEVICE_ID),
+		"x-DeviceInfo":           fmt.Sprintf("||11|%s|PC|%s|%s|| Windows 10 (10.0.19044.4529)|2560X1530|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||", PC_VERSION, MAC_HOSTNAME, MAC_DEVICE_ID),
 		"x-huawei-channelSrc":    "10200153",
 		"x-inner-ntwk":           "2",
 		"x-m4c-caller":           "pc",
 		"x-m4c-src":              "10002",
-		"x-yun-device-id":        MAC_DEVICE_ID,
+		"x-yun-device-id":        fmt.Sprintf("%s-ENDIN", MAC_DEVICE_ID),
 		"x-SvcType":              svcType,
 		"Inner-Hcy-Router-Https": "1",
 	})
@@ -561,7 +558,7 @@ func (d *Yun139) personalRequest(pathname string, method string, callback base.R
 		svcType = "2"
 	}
 	req.SetHeaders(map[string]string{
-		"Accept":                 "application/json, text/plain, */*",
+		"Accept":                 "*/*",
 		"Authorization":          "Basic " + d.getAuthorization(),
 		"Caller":                 "pc",
 		"Cms-Device":             "default",
@@ -569,23 +566,24 @@ func (d *Yun139) personalRequest(pathname string, method string, callback base.R
 		"Mcloud-Client":          "10002",
 		"Mcloud-Route":           "001",
 		"Mcloud-Sign":            fmt.Sprintf("%s,%s,%s", ts, randStr, sign),
-		"Mcloud-Version":         "8.7.0",
+		"Mcloud-Version":         PC_VERSION,
 		"Origin":                 "file://",
 		"Referer":                "file:///D:/SOFTWARE/mCloud/resources/app.asar/out/renderer//index.html",
 		"User-Agent":             PC_USER_AGENT,
-		"x-DeviceInfo":           fmt.Sprintf("||11|8.7.0.20260213|PC|%s|%s|| Windows 11 (10.0.22631)|2560X1440|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||", MAC_HOSTNAME, MAC_DEVICE_ID),
+		"x-DeviceInfo":           fmt.Sprintf("||11|%s|PC|%s|%s|| Windows 10 (10.0.19044.4529)|2560X1530|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||", PC_VERSION, MAC_HOSTNAME, MAC_DEVICE_ID),
 		"x-huawei-channelSrc":    "10200153",
 		"x-inner-ntwk":           "2",
 		"x-m4c-caller":           "pc",
 		"x-m4c-src":              "10002",
-		"x-yun-device-id":        MAC_DEVICE_ID,
 		"x-SvcType":              svcType,
-		"X-Yun-Api-Version":      "v1",
-		"X-Yun-App-Channel":      "10200153",
-		"X-Yun-Channel-Source":   "10200153",
-		"X-Yun-Client-Info":      fmt.Sprintf("||11|8.7.0.20260213|PC|%s|%s|| Windows 11 (10.0.22631)|2560X1440|Q2hpbmVzZSAoU2ltcGxpZmllZCk=||", MAC_HOSTNAME, MAC_DEVICE_ID),
-		"X-Yun-Module-Type":      "100",
-		"X-Yun-Svc-Type":         "1",
+		"x-yun-api-version":      "v1",
+		"x-yun-app-channel":      "10200153",
+		"x-yun-client-info":      fmt.Sprintf("||11|%s|PC|%s|%s-ENDIN|| Windows 10 (10.0.19044.4529)|2560X1530|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||", PC_VERSION, MAC_HOSTNAME, MAC_DEVICE_ID),
+		"x-yun-device-id":        fmt.Sprintf("%s-ENDIN", MAC_DEVICE_ID),
+		"x-yun-market-source":    "000",
+		"x-yun-module-type":      "100",
+		"x-yun-op-type":          "1",
+		"x-yun-svc-type":         "1",
 	})
 
 	var e BaseResp
