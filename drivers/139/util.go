@@ -101,33 +101,80 @@ func (d *Yun139) refreshToken() error {
 	}
 	expiration -= time.Now().UnixMilli()
 	if expiration > 1000*60*60*24*15 {
+		// Authorization有效期大于15天无需刷新
 		return nil
 	}
 	if expiration < 0 {
 		return fmt.Errorf("authorization has expired")
 	}
 
-	url := "https://aas.caiyun.feixin.10086.cn:443/tellin/authTokenRefresh.do"
-	var resp RefreshTokenResp
-	// 注意这里 clienttype 暂时保留，如果刷新报错再考虑修改
-	reqBody := "<root><token>" + splits[2] + "</token><account>" + splits[1] + "</account><clienttype>656</clienttype></root>"
-	_, err = base.RestyClient.R().
-		ForceContentType("application/xml").
+	// 核心修改：使用你抓包得到的最新 PC 端 JSON 接口与特征
+	url := "https://user-njs.yun.139.com/user/auth/refreshToken"
+	
+	// 完美复刻 38 字节的请求体，d.UserDomainID 是在 step3 登录时就已经获取并保存好的
+	reqBody := fmt.Sprintf(`{"userDomainId":"%s"}`, d.UserDomainID)
+
+	// 全套纯正的 Windows PC 客户端马甲
+	headers := map[string]string{
+		"accept":              "*/*",
+		"app_cp":              "pc",
+		"cp_version":          PC_VERSION, // 调用顶部的常量 8.8.1.20260617
+		"content-type":        "application/json;charset=UTF-8",
+		"user-agent":          PC_USER_AGENT,
+		"x-deviceinfo":        fmt.Sprintf("||11|%s|PC|%s|%s-ENDIN|| Windows 10 (10.0.19044.4529)|2560X1530|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||", PC_VERSION, MAC_HOSTNAME, MAC_DEVICE_ID),
+		"x-yun-api-version":   "v1",
+		"x-yun-app-channel":   "10200153",
+		"x-yun-client-info":   fmt.Sprintf("||11|%s|PC|%s|%s-ENDIN|| Windows 10 (10.0.19044.4529)|2560X1530|Q2hpbmVzZSAoU2ltcGxpZmllZCk=|||", PC_VERSION, MAC_HOSTNAME, MAC_DEVICE_ID),
+		"x-yun-device-id":     fmt.Sprintf("%s-ENDIN", MAC_DEVICE_ID),
+		"x-yun-market-source": "000",
+		"x-yun-module-type":   "100",
+		"x-yun-op-type":       "1",
+		"x-yun-svc-type":      "1",
+		"x-yun-uni":           d.UserDomainID, // 补充你抓包发现的额外身份头
+	}
+
+	var resp base.Json
+	res, err := base.RestyClient.R().
+		SetHeaders(headers).
 		SetBody(reqBody).
 		SetResult(&resp).
 		Post(url)
-	if err != nil || resp.Return != "0" {
-		log.Warnf("139yun: failed to refresh token with old token: %v, desc: %s. trying to login with password.", err, resp.Desc)
+
+	// 如果网络请求失败，回退到密码重新登录
+	if err != nil {
+		log.Warnf("139yun: failed to refresh token with API: %v. trying to login with password.", err)
 		newAuth, loginErr := d.loginWithPassword()
-		log.Debugf("newAuth: Ok: %s", newAuth)
 		if loginErr != nil {
 			return fmt.Errorf("failed to login with password after refresh failed: %w", loginErr)
+		}
+		log.Debugf("newAuth: Ok: %s", newAuth)
+		return nil
+	}
+
+	// 检查新版接口的 JSON 返回状态 ("success": true)
+	if success, ok := resp["success"].(bool); !ok || !success {
+		log.Warnf("139yun: token refresh response not success: %s", res.String())
+		newAuth, loginErr := d.loginWithPassword()
+		if loginErr != nil {
+			return fmt.Errorf("login fallback failed: %w", loginErr)
 		}
 		return nil
 	}
 
-	d.Authorization = base64.StdEncoding.EncodeToString([]byte(splits[0] + ":" + splits[1] + ":" + resp.Token))
+	// 提取并更新全新的 AuthToken
+	dataMap, ok := resp["data"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("invalid response data format")
+	}
+	newToken, ok := dataMap["token"].(string)
+	if !ok || newToken == "" {
+		return fmt.Errorf("token string not found in response")
+	}
+
+	// 拼装并保存新的 Authorization 凭证
+	d.Authorization = base64.StdEncoding.EncodeToString([]byte(splits[0] + ":" + splits[1] + ":" + newToken))
 	op.MustSaveDriverStorage(d)
+	log.Infof("139yun: successfully refreshed PC token.")
 	return nil
 }
 
