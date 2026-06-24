@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	_ "net/http/pprof" // [新增] 引入 pprof 用于底层性能排查
 	"path"
 	"strconv"
 	"strings" 
+	"sync"             // [新增] 用于确保 pprof 只启动一次
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
@@ -24,6 +26,20 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils/random"
 	log "github.com/sirupsen/logrus"
 )
+
+// [新增] 初始化 pprof 性能监控服务
+var pprofOnce sync.Once
+
+func init() {
+	pprofOnce.Do(func() {
+		go func() {
+			log.Infof("========== [139-DEBUG] 启动 pprof 性能监控服务器: http://localhost:6060 ==========")
+			if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+				log.Warnf("[139-DEBUG] pprof 启动失败: %v", err)
+			}
+		}()
+	})
+}
 
 type Yun139 struct {
 	model.Storage
@@ -615,6 +631,12 @@ func (d *Yun139) getPartSize(size int64) int64 {
 }
 
 func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
+	// [新增] 性能排查探针起始点
+	log.Infof("========== [139-DEBUG] Put() 性能排查启动 ==========")
+	log.Infof("[139-DEBUG] 目标文件: %s, 标称大小: %d", stream.GetName(), stream.GetSize())
+	log.Infof("[139-DEBUG] 初始 stream 的底层真实类型: %T", stream)
+	tTotalStart := time.Now()
+
 	switch d.Addition.Type {
 	case MetaPersonalNew:
 		var err error
@@ -622,6 +644,7 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 		if len(fullHash) != utils.SHA256.Width {
 			if seeker, ok := stream.(io.Seeker); ok {
 				log.Infof("[139] Detected local file stream. Calculating purely in-memory SHA256 for: %s", stream.GetName())
+				tHashStart := time.Now() // [新增]
 				h := sha256.New()
 				
 				buf := make([]byte, 8*1024*1024)
@@ -639,15 +662,29 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 				if err != nil {
 					return err
 				}
+				log.Infof("[139-DEBUG] 纯内存 Hash 计算耗时: %v", time.Since(tHashStart)) // [新增]
 			} else {
-				log.Warnf("[139] Stream is not seekable, fallback to CacheFullAndHash")
-				// 【修改点】：直接丢弃第一个返回值，不用重新赋值给 stream，避免类型不匹配报错
-				_, fullHash, err = streamPkg.CacheFullAndHash(stream, &up, utils.SHA256)
+				log.Warnf("[139] Stream is not seekable, fallback to CacheFullAndHash. 当前流类型: %T", stream)
+				tCacheStart := time.Now() // [新增]
+
+				// 【核心修改点】：接收缓存生成的新流，强制覆盖旧流，坚决不能丢弃！
+				cachedStream, cachedHash, err := streamPkg.CacheFullAndHash(stream, &up, utils.SHA256)
 				if err != nil {
 					return err
 				}
-				fullHash = strings.ToUpper(fullHash)
+
+				if newStream, ok := cachedStream.(model.FileStreamer); ok {
+					stream = newStream
+					log.Infof("[139-DEBUG] 流已成功替换为本地缓存文件流, 新流类型: %T", stream)
+				} else {
+					log.Errorf("[139-DEBUG] 致命错误：无法将缓存流断言为 model.FileStreamer！类型: %T", cachedStream)
+				}
+
+				fullHash = strings.ToUpper(cachedHash)
+				log.Infof("[139-DEBUG] 落盘缓存+计算 Hash 耗时: %v", time.Since(tCacheStart)) // [新增]
 			}
+		} else {
+			log.Infof("[139-DEBUG] 上游直接提供了 fullHash: %s (秒传模式)", fullHash) // [新增]
 		}
 
 		size := stream.GetSize()
@@ -694,18 +731,24 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 		}
 		pathname := "/file/create"
 		var resp PersonalUploadResp
+		tApiStart := time.Now() // [新增]
 		_, err = d.personalPost(pathname, data, &resp)
+		log.Infof("[139-DEBUG] /file/create API 请求耗时: %v", time.Since(tApiStart)) // [新增]
 		if err != nil {
 			return err
 		}
 
 		if resp.Data.Exist {
+			log.Infof("[139-DEBUG] 文件已秒传完成。总耗时: %v", time.Since(tTotalStart)) // [新增]
 			return nil
 		}
 
 		if resp.Data.PartInfos != nil {
 			p := driver.NewProgress(size, up)
 			rateLimited := driver.NewLimitedUploadStream(ctx, stream)
+
+			tUploadStart := time.Now() // [新增]
+			log.Infof("[139-DEBUG] 开始上传分块 (共 %d 块)...", len(partInfos)) // [新增]
 
 			err = d.uploadPersonalParts(ctx, partInfos, resp.Data.PartInfos, rateLimited, p)
 			if err != nil {
@@ -735,6 +778,8 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 					return err
 				}
 			}
+
+			log.Infof("[139-DEBUG] 分片上传完成，实际传输耗时: %v", time.Since(tUploadStart)) // [新增]
 
 			data = base.Json{
 				"contentHash":          fullHash,
@@ -780,6 +825,7 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 				}
 			}
 		}
+		log.Infof("========== [139-DEBUG] 任务全部结束，总耗时: %v ==========", time.Since(tTotalStart)) // [新增]
 		return nil
 	case MetaPersonal:
 		fallthrough
