@@ -2,17 +2,16 @@ package _139
 
 import (
 	"context"
-	"crypto/sha256" 
-	"encoding/hex"  
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
-	_ "net/http/pprof" // [新增] 引入 pprof 用于底层性能排查
 	"path"
+	"reflect" // 【新增】用于强行解包底层流
 	"strconv"
-	"strings" 
-	"sync"             // [新增] 用于确保 pprof 只启动一次
+	"strings"
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
@@ -26,20 +25,6 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils/random"
 	log "github.com/sirupsen/logrus"
 )
-
-// [新增] 初始化 pprof 性能监控服务
-var pprofOnce sync.Once
-
-func init() {
-	pprofOnce.Do(func() {
-		go func() {
-			log.Infof("========== [139-DEBUG] 启动 pprof 性能监控服务器: http://localhost:6060 ==========")
-			if err := http.ListenAndServe("localhost:6060", nil); err != nil {
-				log.Warnf("[139-DEBUG] pprof 启动失败: %v", err)
-			}
-		}()
-	})
-}
 
 type Yun139 struct {
 	model.Storage
@@ -355,7 +340,6 @@ func (d *Yun139) Move(ctx context.Context, srcObj, dstDir model.Obj) (model.Obj,
 		if err != nil {
 			return nil, err
 		}
-		log.Debugf("[139] Move MetaFamily CreateBatchOprTaskResp.Result.ResultCode: %s", resp.Result.ResultCode)
 		if resp.Result.ResultCode != "0" {
 			return nil, fmt.Errorf("failed to move in family cloud: %s", resp.Result.ResultDesc)
 		}
@@ -534,7 +518,7 @@ func (d *Yun139) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
 			"sourceContentIDs": sourceContentIDs,
 		}
 
-		var resp base.Json 
+		var resp base.Json
 		_, err = d.andAlbumRequest(pathname, body, &resp)
 	default:
 		err = errs.NotImplement
@@ -630,61 +614,90 @@ func (d *Yun139) getPartSize(size int64) int64 {
 	return 100 * utils.MB
 }
 
+// =========================================================
+// 【新增】黑科技：递归击穿 OpenList 的进度条伪装壳，提取底层真实文件流
+// =========================================================
+func peelSeeker(stream interface{}) (io.ReadSeeker, bool) {
+	if s, ok := stream.(io.ReadSeeker); ok {
+		return s, true
+	}
+	// 尝试解包标准接口
+	if u, ok := stream.(interface{ Unwrap() io.Reader }); ok {
+		if s, ok := peelSeeker(u.Unwrap()); ok {
+			return s, true
+		}
+	}
+	if u, ok := stream.(interface{ GetReader() io.Reader }); ok {
+		if s, ok := peelSeeker(u.GetReader()); ok {
+			return s, true
+		}
+	}
+	// 终极武器：使用反射穿透 ReaderUpdatingProgress 的匿名嵌套
+	v := reflect.ValueOf(stream)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() == reflect.Struct {
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			if field.CanInterface() {
+				if s, ok := peelSeeker(field.Interface()); ok {
+					return s, true
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+// =========================================================
+// 优化后的 Put 函数：绕过本地缓存，实现极速纯内存 Hash
+// =========================================================
 func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
-	// [新增] 性能排查探针起始点
-	log.Infof("========== [139-DEBUG] Put() 性能排查启动 ==========")
-	log.Infof("[139-DEBUG] 目标文件: %s, 标称大小: %d", stream.GetName(), stream.GetSize())
-	log.Infof("[139-DEBUG] 初始 stream 的底层真实类型: %T", stream)
-	tTotalStart := time.Now()
 
 	switch d.Addition.Type {
 	case MetaPersonalNew:
 		var err error
 		fullHash := stream.GetHash().GetHash(utils.SHA256)
-		if len(fullHash) != utils.SHA256.Width {
-			if seeker, ok := stream.(io.Seeker); ok {
-				log.Infof("[139] Detected local file stream. Calculating purely in-memory SHA256 for: %s", stream.GetName())
-				tHashStart := time.Now() // [新增]
-				h := sha256.New()
-				
-				buf := make([]byte, 8*1024*1024)
-				pHash := driver.NewProgress(stream.GetSize(), up)
-				r := io.TeeReader(stream, pHash)
 
-				_, err = io.CopyBuffer(h, r, buf)
+		if len(fullHash) != utils.SHA256.Width {
+			// 【核心修复】：不再用弱鸡的 stream.(io.Seeker)，而是使用我们的强行解包函数！
+			if seeker, ok := peelSeeker(stream); ok {
+
+				h := sha256.New()
+				buf := make([]byte, 8*1024*1024) // 8MB 极速缓冲区
+
+				// 记录当前底层指针位置
+				currentOffset, _ := seeker.Seek(0, io.SeekCurrent)
+				// 强制拨回文件开头准备读 Hash
+				seeker.Seek(0, io.SeekStart)
+
+				// [代码修改] 取消了此处的 pHash 和 io.TeeReader 绑定
+				// 直接读取 seeker 进行静默 Hash 计算，杜绝前端出现虚假进度条
+				_, err = io.CopyBuffer(h, seeker, buf)
 				if err != nil {
-					return err
+					return fmt.Errorf("内存 Hash 计算失败: %w", err)
 				}
-				
+
 				fullHash = strings.ToUpper(hex.EncodeToString(h.Sum(nil)))
 
-				_, err = seeker.Seek(0, io.SeekStart)
+				// 【极度关键】：算完 Hash 后，必须把底层文件的指针拨回原位，否则传上云端的是空文件！
+				_, err = seeker.Seek(currentOffset, io.SeekStart)
 				if err != nil {
-					return err
+					return fmt.Errorf("恢复底层流指针失败: %w", err)
 				}
-				log.Infof("[139-DEBUG] 纯内存 Hash 计算耗时: %v", time.Since(tHashStart)) // [新增]
-			} else {
-				log.Warnf("[139] Stream is not seekable, fallback to CacheFullAndHash. 当前流类型: %T", stream)
-				tCacheStart := time.Now() // [新增]
 
-				// 【核心修改点】：接收缓存生成的新流，强制覆盖旧流，坚决不能丢弃！
+			} else {
+
 				cachedStream, cachedHash, err := streamPkg.CacheFullAndHash(stream, &up, utils.SHA256)
 				if err != nil {
 					return err
 				}
-
 				if newStream, ok := cachedStream.(model.FileStreamer); ok {
 					stream = newStream
-					log.Infof("[139-DEBUG] 流已成功替换为本地缓存文件流, 新流类型: %T", stream)
-				} else {
-					log.Errorf("[139-DEBUG] 致命错误：无法将缓存流断言为 model.FileStreamer！类型: %T", cachedStream)
 				}
-
 				fullHash = strings.ToUpper(cachedHash)
-				log.Infof("[139-DEBUG] 落盘缓存+计算 Hash 耗时: %v", time.Since(tCacheStart)) // [新增]
 			}
-		} else {
-			log.Infof("[139-DEBUG] 上游直接提供了 fullHash: %s (秒传模式)", fullHash) // [新增]
 		}
 
 		size := stream.GetSize()
@@ -729,26 +742,22 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 			"type":                 "file",
 			"fileRenameMode":       "auto_rename",
 		}
+
 		pathname := "/file/create"
 		var resp PersonalUploadResp
-		tApiStart := time.Now() // [新增]
 		_, err = d.personalPost(pathname, data, &resp)
-		log.Infof("[139-DEBUG] /file/create API 请求耗时: %v", time.Since(tApiStart)) // [新增]
+
 		if err != nil {
 			return err
 		}
 
 		if resp.Data.Exist {
-			log.Infof("[139-DEBUG] 文件已秒传完成。总耗时: %v", time.Since(tTotalStart)) // [新增]
 			return nil
 		}
 
 		if resp.Data.PartInfos != nil {
 			p := driver.NewProgress(size, up)
 			rateLimited := driver.NewLimitedUploadStream(ctx, stream)
-
-			tUploadStart := time.Now() // [新增]
-			log.Infof("[139-DEBUG] 开始上传分块 (共 %d 块)...", len(partInfos)) // [新增]
 
 			err = d.uploadPersonalParts(ctx, partInfos, resp.Data.PartInfos, rateLimited, p)
 			if err != nil {
@@ -767,9 +776,8 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 						"accountType": 1,
 					},
 				}
-				pathname := "/file/getUploadUrl"
 				var moreresp PersonalUploadUrlResp
-				_, err = d.personalPost(pathname, moredata, &moreresp)
+				_, err = d.personalPost("/file/getUploadUrl", moredata, &moreresp)
 				if err != nil {
 					return err
 				}
@@ -778,8 +786,6 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 					return err
 				}
 			}
-
-			log.Infof("[139-DEBUG] 分片上传完成，实际传输耗时: %v", time.Since(tUploadStart)) // [新增]
 
 			data = base.Json{
 				"contentHash":          fullHash,
@@ -794,7 +800,6 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 		}
 
 		if resp.Data.FileName != stream.GetName() {
-			log.Debugf("[139] conflict detected: %s != %s", resp.Data.FileName, stream.GetName())
 			time.Sleep(time.Millisecond * 500)
 			files, err := d.List(ctx, dstDir, model.ListArgs{Refresh: true})
 			if err != nil {
@@ -802,7 +807,6 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 			}
 			for _, file := range files {
 				if file.GetName() == stream.GetName() {
-					log.Debugf("[139] conflict: removing old: %s", file.GetName())
 					err = d.Rename(ctx, file, stream.GetName()+random.String(4))
 					if err != nil {
 						return err
@@ -816,7 +820,6 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 			}
 			for _, file := range files {
 				if file.GetName() == resp.Data.FileName {
-					log.Debugf("[139] conflict: renaming new: %s => %s", file.GetName(), stream.GetName())
 					err = d.Rename(ctx, file, stream.GetName())
 					if err != nil {
 						return err
@@ -825,8 +828,8 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 				}
 			}
 		}
-		log.Infof("========== [139-DEBUG] 任务全部结束，总耗时: %v ==========", time.Since(tTotalStart)) // [新增]
 		return nil
+
 	case MetaPersonal:
 		fallthrough
 	case MetaGroup:
@@ -883,7 +886,7 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 				"manualRename": 2,
 				"operation":    0,
 				"path":         uploadPath,
-				"seqNo":        random.String(32), 
+				"seqNo":        random.String(32),
 				"totalSize":    reportSize,
 				"uploadContentList": []base.Json{{
 					"contentName": stream.GetName(),
