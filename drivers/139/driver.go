@@ -2,15 +2,15 @@ package _139
 
 import (
 	"context"
-	"crypto/sha256" // 【核心补充】用于内存中计算哈希
-	"encoding/hex"  // 【核心补充】用于哈希字符串转换
+	"crypto/sha256" 
+	"encoding/hex"  
 	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
 	"path"
 	"strconv"
-	"strings" // 【核心补充】用于大写转换
+	"strings" 
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
@@ -518,9 +518,8 @@ func (d *Yun139) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
 			"sourceContentIDs": sourceContentIDs,
 		}
 
-		var resp base.Json // Assuming a generic JSON response for success/failure
+		var resp base.Json 
 		_, err = d.andAlbumRequest(pathname, body, &resp)
-		// For now, we assume no error means success.
 	default:
 		err = errs.NotImplement
 	}
@@ -539,7 +538,6 @@ func (d *Yun139) Remove(ctx context.Context, obj model.Obj) error {
 	case MetaGroup:
 		var contentList []string
 		var catalogList []string
-		// 必须使用完整路径删除
 		if obj.IsDir() {
 			catalogList = append(catalogList, obj.GetPath())
 		} else {
@@ -610,7 +608,6 @@ func (d *Yun139) getPartSize(size int64) int64 {
 	if d.CustomUploadPartSize != 0 {
 		return d.CustomUploadPartSize
 	}
-	// 网盘对于分片数量存在上限
 	if size/utils.GB > 30 {
 		return 512 * utils.MB
 	}
@@ -627,7 +624,6 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 				log.Infof("[139] Detected local file stream. Calculating purely in-memory SHA256 for: %s", stream.GetName())
 				h := sha256.New()
 				
-				// 分配 8MB 超大缓冲区，保护机械硬盘，使顺序读取速度拉满至硬件极限
 				buf := make([]byte, 8*1024*1024)
 				pHash := driver.NewProgress(stream.GetSize(), up)
 				r := io.TeeReader(stream, pHash)
@@ -637,22 +633,19 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 					return err
 				}
 				
-				// 【语法修复完成】：补齐了右侧括号，且进行强制大写转换
 				fullHash = strings.ToUpper(hex.EncodeToString(h.Sum(nil)))
 
-				// 倒带机制：重置指针，让后续网络上传从头读取
 				_, err = seeker.Seek(0, io.SeekStart)
 				if err != nil {
 					return err
 				}
 			} else {
 				log.Warnf("[139] Stream is not seekable, fallback to CacheFullAndHash")
-				var newStream model.FileStreamer
-				newStream, fullHash, err = streamPkg.CacheFullAndHash(stream, &up, utils.SHA256)
+				// 【修改点】：直接丢弃第一个返回值，不用重新赋值给 stream，避免类型不匹配报错
+				_, fullHash, err = streamPkg.CacheFullAndHash(stream, &up, utils.SHA256)
 				if err != nil {
 					return err
 				}
-				stream = newStream
 				fullHash = strings.ToUpper(fullHash)
 			}
 		}
@@ -664,7 +657,6 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 			part = (size + partSize - 1) / partSize
 		}
 
-		// 生成所有 partInfos
 		partInfos := make([]PartInfo, 0, part)
 		for i := int64(0); i < part; i++ {
 			if utils.IsCanceled(ctx) {
@@ -683,14 +675,11 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 			partInfos = append(partInfos, partInfo)
 		}
 
-		// 筛选出前 100 个 partInfos
 		firstPartInfos := partInfos
 		if len(firstPartInfos) > 100 {
 			firstPartInfos = firstPartInfos[:100]
 		}
 
-		// 创建任务，获取上传信息和前100个分片的上传地址
-		// 【防 00010002 报错修复】：剔除无效的大文件预检参数，完全恢复上一版干净的请求体
 		data := base.Json{
 			"contentHash":          fullHash,
 			"contentHashAlgorithm": "SHA256",
@@ -710,27 +699,19 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 			return err
 		}
 
-		// 判断文件是否已存在
-		// resp.Data.Exist: true 已存在同名文件且校验相同，云端不会重复增加文件，无需手动处理冲突
 		if resp.Data.Exist {
 			return nil
 		}
 
-		// 判断文件是否支持快传
-		// resp.Data.RapidUpload: true 支持快传，但此处直接检测是否返回分片的上传地址
-		// 快传的情况下同样需要手动处理冲突
 		if resp.Data.PartInfos != nil {
-			// Progress
 			p := driver.NewProgress(size, up)
 			rateLimited := driver.NewLimitedUploadStream(ctx, stream)
 
-			// 先上传前100个分片
 			err = d.uploadPersonalParts(ctx, partInfos, resp.Data.PartInfos, rateLimited, p)
 			if err != nil {
 				return err
 			}
 
-			// 如果还有剩余分片，分批获取上传地址并上传
 			for i := 100; i < len(partInfos); i += 100 {
 				end := min(i+100, len(partInfos))
 				batchPartInfos := partInfos[i:end]
@@ -755,7 +736,6 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 				}
 			}
 
-			// 全部分片上传完毕后，complete
 			data = base.Json{
 				"contentHash":          fullHash,
 				"contentHashAlgorithm": "SHA256",
@@ -768,21 +748,16 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 			}
 		}
 
-		// 处理冲突
 		if resp.Data.FileName != stream.GetName() {
 			log.Debugf("[139] conflict detected: %s != %s", resp.Data.FileName, stream.GetName())
-			// 给服务器一定时间处理数据，避免无法刷新文件列表
 			time.Sleep(time.Millisecond * 500)
-			// 刷新并获取文件列表
 			files, err := d.List(ctx, dstDir, model.ListArgs{Refresh: true})
 			if err != nil {
 				return err
 			}
-			// 删除旧文件
 			for _, file := range files {
 				if file.GetName() == stream.GetName() {
 					log.Debugf("[139] conflict: removing old: %s", file.GetName())
-					// 删除前重命名旧文件，避免仍旧冲突
 					err = d.Rename(ctx, file, stream.GetName()+random.String(4))
 					if err != nil {
 						return err
@@ -794,7 +769,6 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 					break
 				}
 			}
-			// 重命名新文件
 			for _, file := range files {
 				if file.GetName() == resp.Data.FileName {
 					log.Debugf("[139] conflict: renaming new: %s => %s", file.GetName(), stream.GetName())
@@ -812,17 +786,13 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 	case MetaGroup:
 		fallthrough
 	case MetaFamily:
-		// 处理冲突
-		// 获取文件列表
 		files, err := d.List(ctx, dstDir, model.ListArgs{})
 		if err != nil {
 			return err
 		}
-		// 删除旧文件
 		for _, file := range files {
 			if file.GetName() == stream.GetName() {
 				log.Debugf("[139] conflict: removing old: %s", file.GetName())
-				// 删除前重命名旧文件，避免仍旧冲突
 				err = d.Rename(ctx, file, stream.GetName()+random.String(4))
 				if err != nil {
 					return err
@@ -848,7 +818,6 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 			"uploadContentList": []base.Json{{
 				"contentName": stream.GetName(),
 				"contentSize": reportSize,
-				// "digest": "5a3231986ce7a6b46e408612d385bafa"
 			}},
 			"parentCatalogID": dstDir.GetID(),
 			"newCatalogName":  "",
@@ -860,7 +829,6 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 		pathname := "/orchestration/personalCloud/uploadAndDownload/v1.0/pcUploadFileRequest"
 		if d.isFamily() || d.Addition.Type == MetaGroup {
 			uploadPath := path.Join(dstDir.GetPath(), dstDir.GetID())
-			// if dstDir is root folder
 			if dstDir.GetID() == d.RootFolderID {
 				uploadPath = d.RootPath
 			}
@@ -869,12 +837,11 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 				"manualRename": 2,
 				"operation":    0,
 				"path":         uploadPath,
-				"seqNo":        random.String(32), // 序列号不能为空
+				"seqNo":        random.String(32), 
 				"totalSize":    reportSize,
 				"uploadContentList": []base.Json{{
 					"contentName": stream.GetName(),
 					"contentSize": reportSize,
-					// "digest": "5a3231986ce7a6b46e408612d385bafa"
 				}},
 			})
 			pathname = "/orchestration/familyCloud-rebuild/content/v1.0/getFileUploadURL"
@@ -890,7 +857,6 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 		}
 
 		size := stream.GetSize()
-		// Progress
 		p := driver.NewProgress(size, up)
 		partSize := d.getPartSize(size)
 		part := int64(1)
@@ -907,7 +873,6 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 			byteSize := min(size-start, partSize)
 
 			limitReader := io.LimitReader(rateLimited, byteSize)
-			// Update Progress
 			r := io.TeeReader(limitReader, p)
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, resp.Data.UploadResult.RedirectionURL, r)
 			if err != nil {
